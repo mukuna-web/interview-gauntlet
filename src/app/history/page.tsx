@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { InterviewSession, MODE_LABELS, MODE_EMOJIS, DIFFICULTY_COLORS } from "@/lib/types";
 import { getSessions, clearSessions } from "@/lib/session";
+import { downloadSessionsCsv } from "@/lib/export";
 
 export default function HistoryPage() {
   const [sessions, setSessions] = useState<InterviewSession[]>([]);
@@ -24,7 +25,13 @@ export default function HistoryPage() {
       </div>
 
       {sessions.length > 0 && (
-        <div className="flex justify-end mb-4">
+        <div className="flex justify-end gap-3 mb-4">
+          <button onClick={() => downloadSessionsCsv(sessions)} className="text-sm text-blue-400 hover:text-blue-300 transition-colors">
+            Export CSV
+          </button>
+          <button onClick={() => window.print()} className="text-sm text-blue-400 hover:text-blue-300 transition-colors">
+            Print / PDF
+          </button>
           <button onClick={handleClear} className="text-sm text-red-400 hover:text-red-300 transition-colors">
             Clear History
           </button>
@@ -43,7 +50,14 @@ export default function HistoryPage() {
         <div className="space-y-3">
           {sessions.map((session, i) => {
             const date = new Date(session.completedAt);
-            const correct = session.results.filter((r) => r.evaluation.score >= 60).length;
+            const scored = session.results.filter(
+              (result) =>
+                result.evaluation.status === "scored" &&
+                result.evaluation.score !== null,
+            );
+            const correct = scored.filter(
+              (result) => (result.evaluation.score ?? 0) >= 60,
+            ).length;
             const finalDiff = session.difficultyProgression[session.difficultyProgression.length - 1];
 
             return (
@@ -62,14 +76,14 @@ export default function HistoryPage() {
                     <div className="text-center">
                       <div
                         className="text-xl font-bold"
-                        style={{ color: session.overallScore >= 75 ? "#22c55e" : session.overallScore >= 50 ? "#eab308" : "#ef4444" }}
+                        style={{ color: scoreColor(session.overallScore) }}
                       >
-                        {session.overallScore}
+                        {session.overallScore ?? "—"}
                       </div>
                       <div className="text-[10px] text-gray-500">Score</div>
                     </div>
                     <div className="text-center">
-                      <div className="text-xl font-bold text-interview-accent">{correct}/{session.results.length}</div>
+                      <div className="text-xl font-bold text-interview-accent">{correct}/{scored.length}</div>
                       <div className="text-[10px] text-gray-500">Correct</div>
                     </div>
                     <span
@@ -87,4 +101,11 @@ export default function HistoryPage() {
       )}
     </div>
   );
+}
+
+function scoreColor(score: number | null): string {
+  if (score === null) return "#9ca3af";
+  if (score >= 75) return "#22c55e";
+  if (score >= 50) return "#eab308";
+  return "#ef4444";
 }

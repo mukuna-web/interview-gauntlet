@@ -1,4 +1,4 @@
-import { Difficulty } from "./types";
+import { AnswerEvaluation, Difficulty } from "./types";
 
 const DIFFICULTY_ORDER: Difficulty[] = ["easy", "medium", "hard"];
 
@@ -22,4 +22,25 @@ export function getNextDifficulty(
 
 export function isCorrect(score: number): boolean {
   return score >= 60;
+}
+
+export function advanceAdaptiveState(
+  currentDifficulty: Difficulty,
+  consecutiveCorrect: number,
+  evaluation: AnswerEvaluation,
+): { difficulty: Difficulty; consecutiveCorrect: number } {
+  if (evaluation.status === "abstained" || evaluation.score === null) {
+    return { difficulty: currentDifficulty, consecutiveCorrect };
+  }
+
+  const correct = isCorrect(evaluation.score);
+  const nextConsecutiveCorrect = correct ? consecutiveCorrect + 1 : 0;
+  return {
+    difficulty: getNextDifficulty(
+      currentDifficulty,
+      nextConsecutiveCorrect,
+      correct,
+    ),
+    consecutiveCorrect: nextConsecutiveCorrect,
+  };
 }

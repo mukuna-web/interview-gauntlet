@@ -1,7 +1,26 @@
 import { Question, AnswerEvaluation } from "./types";
 
+const MINIMUM_WORDS = 5;
+const PUNCTUATED_IDENTITY_PREFIX =
+  /^\s*my\s+name\s+is\s+[\p{L}\p{M}'-]+(?:\s+[\p{L}\p{M}'-]+){0,3}[.!,:;]\s*/iu;
+const SINGLE_NAME_IDENTITY_PREFIX =
+  /^\s*my\s+name\s+is\s+[\p{L}\p{M}'-]+\s+/iu;
+
+export interface HumanReviewInput {
+  reviewer: string;
+  decision: "accepted" | "changes_requested";
+  notes?: string;
+}
+
+export function stripIdentityOnlyPrefix(userAnswer: string): string {
+  return userAnswer
+    .replace(PUNCTUATED_IDENTITY_PREFIX, "")
+    .replace(SINGLE_NAME_IDENTITY_PREFIX, "");
+}
+
 export function evaluateAnswer(question: Question, userAnswer: string): AnswerEvaluation {
-  const answer = userAnswer.toLowerCase();
+  const answer = stripIdentityOnlyPrefix(userAnswer).toLowerCase();
+  const observedWords = answer.trim() ? answer.trim().split(/\s+/).length : 0;
   const matched: string[] = [];
   const missed: string[] = [];
 
@@ -18,10 +37,25 @@ export function evaluateAnswer(question: Question, userAnswer: string): AnswerEv
   }
 
   const totalKeywords = question.expectedKeywords.length;
-  const rawScore = totalKeywords > 0 ? (matched.length / totalKeywords) * 100 : 0;
+  if (observedWords < MINIMUM_WORDS || totalKeywords === 0) {
+    return {
+      status: "abstained",
+      reviewStatus: "not_reviewable",
+      score: null,
+      matchedKeywords: matched,
+      missedKeywords: missed,
+      feedback: `Not enough evidence to score this answer. Provide at least ${MINIMUM_WORDS} substantive words.`,
+      explanation: {
+        formula: "abstained: minimum evidence threshold not met",
+        matchedConcepts: matched.length,
+        totalConcepts: totalKeywords,
+        observedWords,
+        minimumWords: MINIMUM_WORDS,
+      },
+    };
+  }
 
-  const lengthBonus = Math.min(10, Math.floor(answer.split(/\s+/).length / 10));
-  const score = Math.min(100, Math.round(rawScore + lengthBonus));
+  const score = Math.round((matched.length / totalKeywords) * 100);
 
   let feedback: string;
   if (score >= 85) {
@@ -42,5 +76,41 @@ export function evaluateAnswer(question: Question, userAnswer: string): AnswerEv
     }
   }
 
-  return { score, matchedKeywords: matched, missedKeywords: missed, feedback };
+  return {
+    status: "scored",
+    reviewStatus: "needs_review",
+    score,
+    matchedKeywords: matched,
+    missedKeywords: missed,
+    feedback,
+    explanation: {
+      formula: "round(matched concepts / total expected concepts × 100)",
+      matchedConcepts: matched.length,
+      totalConcepts: totalKeywords,
+      observedWords,
+      minimumWords: MINIMUM_WORDS,
+    },
+  };
+}
+
+export function applyHumanReview(
+  evaluation: AnswerEvaluation,
+  input: HumanReviewInput,
+): AnswerEvaluation {
+  if (evaluation.reviewStatus === "not_reviewable") {
+    throw new Error("abstained answers are not reviewable");
+  }
+  if (!input.reviewer.trim()) {
+    throw new Error("reviewer identity is required");
+  }
+  return {
+    ...evaluation,
+    reviewStatus: input.decision,
+    review: {
+      reviewer: input.reviewer.trim(),
+      decision: input.decision,
+      notes: input.notes?.trim() ?? "",
+      reviewedAt: new Date().toISOString(),
+    },
+  };
 }

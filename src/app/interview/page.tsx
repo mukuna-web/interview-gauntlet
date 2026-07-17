@@ -7,9 +7,10 @@ import {
   MODE_LABELS, MODE_EMOJIS, DIFFICULTY_COLORS, DIFFICULTY_TIMES,
 } from "@/lib/types";
 import { getRandomQuestion } from "@/lib/questions";
-import { evaluateAnswer } from "@/lib/evaluator";
-import { getNextDifficulty, isCorrect } from "@/lib/adaptive";
+import { applyHumanReview, evaluateAnswer } from "@/lib/evaluator";
+import { advanceAdaptiveState, isCorrect } from "@/lib/adaptive";
 import { saveSession, generateSessionId } from "@/lib/session";
+import { calculateOverallScore } from "@/lib/session-metrics";
 import Timer from "@/components/Timer";
 import ProgressBar from "@/components/ProgressBar";
 
@@ -34,6 +35,7 @@ function InterviewContent() {
   const [sessionStart] = useState(Date.now());
   const [difficultyLog, setDifficultyLog] = useState<Difficulty[]>(["medium"]);
   const [currentQuestion, setCurrentQuestion] = useState<ReturnType<typeof getRandomQuestion>>(null);
+  const [reviewerName, setReviewerName] = useState("");
 
   useEffect(() => {
     setCurrentQuestion(getRandomQuestion(mode, difficulty, usedIds));
@@ -71,7 +73,9 @@ function InterviewContent() {
     setResults(newResults);
 
     if (newResults.length >= TOTAL_QUESTIONS) {
-      const overall = Math.round(newResults.reduce((s, r) => s + r.evaluation.score, 0) / newResults.length);
+      const overall = calculateOverallScore(
+        newResults.map((result) => result.evaluation),
+      );
       const session: InterviewSession = {
         id: generateSessionId(),
         mode,
@@ -86,12 +90,14 @@ function InterviewContent() {
       return;
     }
 
-    const correct = isCorrect(currentResult.evaluation.score);
-    const newConsec = correct ? consecutiveCorrect + 1 : 0;
-    setConsecutiveCorrect(newConsec);
-    const nextDiff = getNextDifficulty(difficulty, newConsec, correct);
-    setDifficulty(nextDiff);
-    setDifficultyLog((prev) => [...prev, nextDiff]);
+    const nextState = advanceAdaptiveState(
+      difficulty,
+      consecutiveCorrect,
+      currentResult.evaluation,
+    );
+    setConsecutiveCorrect(nextState.consecutiveCorrect);
+    setDifficulty(nextState.difficulty);
+    setDifficultyLog((prev) => [...prev, nextState.difficulty]);
     setQuestionIndex((i) => i + 1);
     setAnswer("");
     setCurrentResult(null);
@@ -99,11 +105,25 @@ function InterviewContent() {
     setPhase("question");
   };
 
+  const reviewCurrent = (decision: "accepted" | "changes_requested") => {
+    if (!currentResult || !reviewerName.trim()) return;
+    setCurrentResult({
+      ...currentResult,
+      evaluation: applyHumanReview(currentResult.evaluation, {
+        reviewer: reviewerName,
+        decision,
+      }),
+    });
+  };
+
   // Summary view
   if (phase === "summary") {
-    const avgScore = Math.round(results.reduce((s, r) => s + r.evaluation.score, 0) / results.length);
+    const avgScore = calculateOverallScore(
+      results.map((result) => result.evaluation),
+    );
     const topicScores: Record<string, { total: number; count: number }> = {};
     results.forEach((r) => {
+      if (r.evaluation.status === "abstained" || r.evaluation.score === null) return;
       const t = r.question.topic;
       if (!topicScores[t]) topicScores[t] = { total: 0, count: 0 };
       topicScores[t].total += r.evaluation.score;
@@ -113,7 +133,9 @@ function InterviewContent() {
     return (
       <div className="max-w-3xl mx-auto animate-fade-in">
         <div className="text-center mb-8">
-          <div className="text-5xl mb-4">{avgScore >= 75 ? "🏆" : avgScore >= 50 ? "👍" : "📚"}</div>
+          <div className="text-5xl mb-4">
+            {avgScore === null ? "📝" : avgScore >= 75 ? "🏆" : avgScore >= 50 ? "👍" : "📚"}
+          </div>
           <h1 className="text-3xl font-bold text-white mb-2">Interview Complete</h1>
           <p className="text-gray-400">
             {MODE_EMOJIS[mode]} {MODE_LABELS[mode]} &middot; {results.length} questions
@@ -122,14 +144,19 @@ function InterviewContent() {
 
         <div className="grid grid-cols-3 gap-4 mb-8">
           <div className="bg-interview-card border border-interview-border rounded-xl p-4 text-center">
-            <div className="text-3xl font-bold" style={{ color: avgScore >= 75 ? "#22c55e" : avgScore >= 50 ? "#eab308" : "#ef4444" }}>
-              {avgScore}
+            <div className="text-3xl font-bold" style={{ color: scoreColor(avgScore) }}>
+              {avgScore ?? "—"}
             </div>
             <div className="text-xs text-gray-500 mt-1">Overall Score</div>
           </div>
           <div className="bg-interview-card border border-interview-border rounded-xl p-4 text-center">
             <div className="text-3xl font-bold text-interview-accent">
-              {results.filter((r) => isCorrect(r.evaluation.score)).length}/{results.length}
+              {results.filter(
+                (r) =>
+                  r.evaluation.status === "scored" &&
+                  r.evaluation.score !== null &&
+                  isCorrect(r.evaluation.score),
+              ).length}/{results.filter((r) => r.evaluation.status === "scored").length}
             </div>
             <div className="text-xs text-gray-500 mt-1">Correct</div>
           </div>
@@ -165,6 +192,9 @@ function InterviewContent() {
         <div className="bg-interview-card border border-interview-border rounded-xl p-4 mb-6">
           <h3 className="text-sm font-bold text-gray-400 mb-3">Topic Breakdown</h3>
           <div className="space-y-2">
+            {Object.keys(topicScores).length === 0 && (
+              <p className="text-sm text-gray-500">No answers had enough evidence to score.</p>
+            )}
             {Object.entries(topicScores)
               .sort((a, b) => b[1].total / b[1].count - a[1].total / a[1].count)
               .map(([topic, data]) => {
@@ -205,9 +235,9 @@ function InterviewContent() {
               <span className="text-sm text-gray-300 flex-1 truncate">{r.question.question}</span>
               <span
                 className="font-mono font-bold text-sm"
-                style={{ color: r.evaluation.score >= 60 ? "#22c55e" : "#ef4444" }}
+                style={{ color: scoreColor(r.evaluation.score) }}
               >
-                {r.evaluation.score}
+                {r.evaluation.score ?? "—"}
               </span>
             </div>
           ))}
@@ -296,18 +326,42 @@ function InterviewContent() {
         <div className="mt-6 animate-slide-up">
           <div className="bg-interview-card border border-interview-border rounded-xl p-6 mb-4">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-white">Your Score</h3>
+              <h3 className="text-lg font-bold text-white">
+                {currentResult.evaluation.status === "abstained"
+                  ? "Insufficient evidence"
+                  : "Your Score"}
+              </h3>
               <div
                 className="text-4xl font-bold"
-                style={{
-                  color: currentResult.evaluation.score >= 75 ? "#22c55e" : currentResult.evaluation.score >= 50 ? "#eab308" : "#ef4444",
-                }}
+                style={{ color: scoreColor(currentResult.evaluation.score) }}
               >
-                {currentResult.evaluation.score}
+                {currentResult.evaluation.score ?? "—"}
               </div>
             </div>
 
             <p className="text-gray-300 mb-4">{currentResult.evaluation.feedback}</p>
+
+            <div className="mb-4 rounded-lg border border-white/10 p-3">
+              <div className="mb-2 text-xs text-gray-400">
+                Review status: <strong>{currentResult.evaluation.reviewStatus}</strong>
+              </div>
+              {currentResult.evaluation.reviewStatus !== "not_reviewable" && (
+                <div className="flex gap-2">
+                  <input
+                    value={reviewerName}
+                    onChange={(event) => setReviewerName(event.target.value)}
+                    placeholder="Reviewer name"
+                    className="min-w-0 flex-1 rounded border border-interview-border bg-black/20 px-3 py-2 text-sm"
+                  />
+                  <button disabled={!reviewerName.trim()} onClick={() => reviewCurrent("accepted")} className="rounded bg-green-600 px-3 py-2 text-xs disabled:opacity-30">
+                    Accept score
+                  </button>
+                  <button disabled={!reviewerName.trim()} onClick={() => reviewCurrent("changes_requested")} className="rounded bg-amber-600 px-3 py-2 text-xs disabled:opacity-30">
+                    Flag correction
+                  </button>
+                </div>
+              )}
+            </div>
 
             {currentResult.evaluation.matchedKeywords.length > 0 && (
               <div className="mb-3">
@@ -359,4 +413,11 @@ export default function InterviewPage() {
       <InterviewContent />
     </Suspense>
   );
+}
+
+function scoreColor(score: number | null): string {
+  if (score === null) return "#9ca3af";
+  if (score >= 75) return "#22c55e";
+  if (score >= 50) return "#eab308";
+  return "#ef4444";
 }

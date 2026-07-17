@@ -13,10 +13,25 @@ export interface Question {
 }
 
 export interface AnswerEvaluation {
-  score: number;
+  status: "scored" | "abstained";
+  reviewStatus: "needs_review" | "not_reviewable" | "accepted" | "changes_requested";
+  score: number | null;
   matchedKeywords: string[];
   missedKeywords: string[];
   feedback: string;
+  explanation: {
+    formula: string;
+    matchedConcepts: number;
+    totalConcepts: number;
+    observedWords: number;
+    minimumWords: number;
+  };
+  review?: {
+    reviewer: string;
+    decision: "accepted" | "changes_requested";
+    notes: string;
+    reviewedAt: string;
+  };
 }
 
 export interface QuestionResult {
@@ -32,7 +47,7 @@ export interface InterviewSession {
   id: string;
   mode: InterviewMode;
   results: QuestionResult[];
-  overallScore: number;
+  overallScore: number | null;
   startedAt: number;
   completedAt: number;
   difficultyProgression: Difficulty[];
